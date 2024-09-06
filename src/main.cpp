@@ -1,5 +1,3 @@
-#include <Arduino.h>
-
 // *******************************************************************
 //  Arduino Nano 5V example code
 //  for   https://github.com/EmanuelFeru/hoverboard-firmware-hack-FOC
@@ -35,18 +33,38 @@
 #define SPEED_STEP          20          // [-] Speed step
 #define DEBUG_RX                        // [-] Debug received data. Prints all bytes to serial (comment-out to disable)
 
-/*
- * There are three serial ports on the ESP known as U0UXD, U1UXD and U2UXD.
- * 
- * U0UXD is used to communicate with the ESP32 for programming and during reset/boot.
- * U1UXD is unused and can be used for your projects. Some boards use this port for SPI Flash access though
- * U2UXD is unused and can be used for your projects.
- * 
-*/
+#include <Arduino.h>
+#ifdef ESP32
+  //WIFI Libs
+  // #include <AsyncTCP.h>
+  // #include <WiFi.h>
+  // #include <DNSServer.h>
+  // #include <ESPAsyncWebServer.h>
+  // #include <WString.h>
+  #include <WebSerial.h>
 
+  AsyncWebServer  server(80);
+  //ESP Storage Lib
+  #include <SPIFFS.h>
+  /*
+  * There are three serial ports on the ESP known as U0UXD, U1UXD and U2UXD.
+  * 
+  * U0UXD is used to communicate with the ESP32 for programming and during reset/boot.
+  * U1UXD is unused and can be used for your projects. Some boards use this port for SPI Flash access though
+  * U2UXD is unused and can be used for your projects.
+  * 
+  */
+  HardwareSerial & HoverSerial = Serial2;
+#else
+  #include <SoftwareSerial.h>
+  SoftwareSerial HoverSerial(2,3);        // RX, TX
+#endif
 HardwareSerial & Monitoring = Serial;
-HardwareSerial & HoverSerial = Serial2;
 
+const char* ssid = "teveo"; // WiFi AP SSID
+const char* password = "p4th3tik0"; // WiFi AP Password
+
+static uint32_t last = millis();
 
 // Global variables
 uint8_t idx = 0;                        // Index for new data pointer
@@ -77,6 +95,33 @@ typedef struct{
 SerialFeedback Feedback;
 SerialFeedback NewFeedback;
 
+void wifi_setup(){
+  WiFi.softAP(ssid, password);
+  Monitoring.print("IP Address: ");
+  Monitoring.println(WiFi.softAPIP().toString());
+
+  // WebSerial.onMessage([](const String& msg) { Monitoring.println(msg); });
+  WebSerial.begin(&server);
+
+  server.onNotFound([](AsyncWebServerRequest* request) { request->redirect("/webserial"); });
+  
+    /* Attach Message Callback */
+  WebSerial.onMessage([&](uint8_t *data, size_t len) {
+    Monitoring.printf("Received %u bytes from WebSerial: ", len);
+    Monitoring.write(data, len);
+    Monitoring.println();
+    WebSerial.println("Received Data...");
+    String d = "";
+    for(size_t i=0; i < len; i++){
+      d += char(data[i]);
+    }
+    WebSerial.println(d);
+    // Send(0,)
+  });
+
+  server.begin();
+}
+
 // ########################## SETUP ##########################
 void setup() 
 {
@@ -84,6 +129,7 @@ void setup()
   Monitoring.println("Hoverboard Serial v1.0");
   HoverSerial.begin(HOVER_SERIAL_BAUD);
 
+  wifi_setup();
   pinMode(LED_BUILTIN, OUTPUT);
 }
 
@@ -112,9 +158,9 @@ void Receive()
         return;
     }
 
-  // If DEBUG_RX is defined print all incoming bytes
-  #ifdef DEBUG_RX
-       Monitoring.print(incomingByte);
+    // If DEBUG_RX is defined print all incoming bytes
+    #ifdef DEBUG_RX
+        Monitoring.print(incomingByte);
         return;
     #endif
 
@@ -161,7 +207,7 @@ void Receive()
 // ########################## LOOP ##########################
 
 unsigned long iTimeSend = 0;
-int iTest = 0;
+int16_t iTest = 0;
 int iStep = SPEED_STEP;
 
 void loop(void)
@@ -172,19 +218,18 @@ void loop(void)
   Receive();
 
   // Send commands
-  if (iTimeSend > timeNow) return;
-  iTimeSend = timeNow + TIME_SEND;
-  Send(0, iTest);
+    if (iTimeSend > timeNow) return;
+    if (millis() - last > 50) {
 
-  // Calculate test command signal
-  iTest += iStep;
+    
+    if (iTest >= SPEED_MAX_TEST) iTest = SPEED_MAX_TEST;
+    if (iTest <= -SPEED_MAX_TEST) iTest = -SPEED_MAX_TEST;
+    // WebSerial.print(buffer);
 
-  // invert step if reaching limit
-  if (iTest >= SPEED_MAX_TEST || iTest <= -SPEED_MAX_TEST)
-    iStep = -iStep;
-
+    Send( 0 , iTest ); // usteer, uspeed  int_16t
+    last = millis();
+  }
+  WebSerial.loop();
   // Blink the LED
-  digitalWrite(LED_BUILTIN, (timeNow%2000)<1000);
+  digitalWrite(LED_BUILTIN, (last%2000)<1000);
 }
-
-// ########################## END ##########################
